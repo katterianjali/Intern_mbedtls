@@ -89,9 +89,10 @@ struct psa_hash_operation_s
      * any driver (i.e. the driver context is not active, in use). */
     unsigned int MBEDTLS_PRIVATE(id);
     psa_driver_hash_context_t MBEDTLS_PRIVATE(ctx);
+    uint32_t op_handle; 
 };
 
-#define PSA_HASH_OPERATION_INIT { 0, { 0 } }
+#define PSA_HASH_OPERATION_INIT { 0, { 0 } , 0 }
 static inline struct psa_hash_operation_s psa_hash_operation_init( void )
 {
     const struct psa_hash_operation_s v = PSA_HASH_OPERATION_INIT;

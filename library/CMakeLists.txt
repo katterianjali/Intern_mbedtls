@@ -272,7 +272,8 @@ foreach(target IN LISTS target_libraries)
     target_include_directories(${target}
         PUBLIC $<BUILD_INTERFACE:${MBEDTLS_DIR}/include/>
                $<INSTALL_INTERFACE:include/>
-        PRIVATE ${MBEDTLS_DIR}/library/)
+        PRIVATE ${MBEDTLS_DIR}/library/
+        PRIVATE /home/tuskha01/work/lwm2m/ts_new/tools/b-test/install/linux-pc/include)
     install(
         TARGETS ${target}
         EXPORT MbedTLSTargets

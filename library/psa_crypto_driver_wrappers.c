@@ -29,6 +29,12 @@
 
 #include "mbedtls/platform.h"
 
+#include "service_locator.h"
+#include "service_client.h"
+#include "discovery_client.h"
+
+#include <string.h>
+
 #if defined(MBEDTLS_PSA_CRYPTO_C)
 
 #if defined(MBEDTLS_PSA_CRYPTO_DRIVERS)
@@ -52,6 +58,9 @@
  * ID 1 is reserved for the Mbed TLS software driver. */
 #define PSA_CRYPTO_MBED_TLS_DRIVER_ID (1)
 
+//################################################
+#define PSA_TS_DRIVER 1
+
 #if defined(PSA_CRYPTO_DRIVER_TEST)
 #define PSA_CRYPTO_TRANSPARENT_TEST_DRIVER_ID (2)
 #define PSA_CRYPTO_OPAQUE_TEST_DRIVER_ID (3)
@@ -66,11 +75,151 @@
 #endif
 #include "psa_crypto_se.h"
 #endif
+psa_status_t ts_init( void );
+
+struct service_client m_client;
+
+psa_status_t ts_opaque_import_key(
+    const psa_key_attributes_t *attributes,
+    const uint8_t *data,
+    size_t data_length,
+    psa_key_id_t *key_buffer,
+    size_t key_buffer_size,
+    size_t *key_buffer_length,
+    size_t *bits);
+
+psa_status_t ts_opaque_export_key(
+        psa_key_id_t key_id,
+        size_t key_buffer_size,
+        uint8_t *data,
+        size_t data_size,
+        size_t *data_length);
+
+
+
+extern psa_status_t crypto_caller_import_key_ext(struct service_client *context,
+	const psa_key_attributes_t *attributes,
+	const uint8_t *data, size_t data_length,
+	psa_key_id_t *id);
+
+extern psa_status_t crypto_caller_export_key_ext(struct service_client *context,
+    psa_key_id_t id,
+    uint8_t *data, size_t data_size, size_t *data_length);
+
+extern psa_status_t crypto_caller_hash_setup_ext(struct service_client *context,
+    uint32_t *op_handle,
+    psa_algorithm_t alg);
+
+extern psa_status_t crypto_caller_hash_update_ext(struct service_client *context,
+    uint32_t op_handle,
+    const uint8_t *input,
+    size_t input_length);
+
+extern psa_status_t crypto_caller_hash_finish_ext(struct service_client *context,
+    uint32_t op_handle,
+    uint8_t *hash,
+    size_t hash_size,
+    size_t *hash_length);
+
+extern psa_status_t crypto_caller_hash_abort_ext(struct service_client *context,
+    uint32_t op_handle);
+
+extern psa_status_t crypto_caller_hash_verify_ext(struct service_client *context,
+    uint32_t op_handle,
+    const uint8_t *hash,
+    size_t hash_length);
+extern psa_status_t crypto_caller_hash_clone_ext(struct service_client *context,
+    uint32_t source_op_handle,
+    uint32_t *target_op_handle);
+
+psa_status_t ts_init( void )
+{
+    struct service_context *crypto_service_context = NULL;
+    psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
+
+    service_locator_init();
+
+    crypto_service_context = service_locator_query("sn:trustedfirmware.org:crypto:0", &status);
+	if (crypto_service_context) {
+        struct rpc_caller *caller;
+	    rpc_session_handle session_handle;
+
+	    session_handle = service_context_open(crypto_service_context, 0, &caller);                                                                                                                                               
+        if (session_handle) {
+            service_client_init(&m_client, caller);
+            if (caller) {
+	       	    discovery_client_get_service_info(&m_client);
+            }
+        }
+    }
+    return( PSA_SUCCESS );
+
+}
+
+
+psa_status_t ts_opaque_import_key(
+    const psa_key_attributes_t *attributes,
+    const uint8_t *data,
+    size_t data_length,
+    psa_key_id_t *key_buffer,
+    size_t key_buffer_size,
+    size_t *key_buffer_length,
+    size_t *bits)  
+{
+    psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
+    psa_key_id_t key_id;
+
+    struct attrib{
+        uint32_t lifetime;
+        uint32_t id;
+        uint32_t alg;
+        uint32_t usage;
+        size_t bits;
+        uint16_t type;
+    };
+
+    struct attrib ts_attrib;
+
+    ts_attrib.lifetime= psa_get_key_lifetime( attributes );
+    ts_attrib.id = psa_get_key_id (attributes); 
+    ts_attrib.bits = 0;//psa_get_key_bits( attributes );
+    ts_attrib.type = psa_get_key_type(attributes);
+    ts_attrib.usage = attributes->core.policy.usage;
+    
+    status = crypto_caller_import_key_ext(&m_client, (psa_key_attributes_t*) &ts_attrib, data, data_length, &key_id);
+
+    *key_buffer = key_id;
+    (void) key_buffer_size;
+    (void) key_buffer_length;
+    (void) bits;
+
+	return status;
+} 
+
+
+psa_status_t ts_opaque_export_key(
+    psa_key_id_t key_id,
+    size_t key_buffer_size,
+    uint8_t *data,
+    size_t data_size,
+    size_t *data_length)  
+{
+    psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
+    size_t length;
+  
+    status = crypto_caller_export_key_ext(&m_client, key_id, data, data_size,&length);
+    
+    *data_length = length;
+    (void) key_buffer_size;
+    
+    return status;
+} 
+
 
 psa_status_t psa_driver_wrapper_init( void )
 {
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
-
+   // printf("\n============= %s\n",__func__);
 #if defined(MBEDTLS_PSA_CRYPTO_SE_C)
     status = psa_init_all_se_drivers( );
     if( status != PSA_SUCCESS )
@@ -86,10 +235,17 @@ psa_status_t psa_driver_wrapper_init( void )
     if( status != PSA_SUCCESS )
         return( status );
 #endif
+#if defined(PSA_CRYPTO_TS_DRIVER)
+    status = ts_init();
+    if( status != PSA_SUCCESS )
+        return( status );
+#endif
 
     (void) status;
     return( PSA_SUCCESS );
 }
+
+
 
 void psa_driver_wrapper_free( void )
 {
@@ -120,7 +276,7 @@ psa_status_t psa_driver_wrapper_sign_message(
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
-
+//printf("\n============= %s\n",__func__);
     switch( location )
     {
         case PSA_KEY_LOCATION_LOCAL_STORAGE:
@@ -194,7 +350,7 @@ psa_status_t psa_driver_wrapper_verify_message(
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
-
+//printf("\n============= %s\n",__func__);
     switch( location )
     {
         case PSA_KEY_LOCATION_LOCAL_STORAGE:
@@ -281,7 +437,7 @@ psa_status_t psa_driver_wrapper_sign_hash(
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
-
+//printf("\n============= %s\n",__func__);
     switch( location )
     {
         case PSA_KEY_LOCATION_LOCAL_STORAGE:
@@ -365,7 +521,7 @@ psa_status_t psa_driver_wrapper_verify_hash(
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
-
+//printf("\n============= %s\n",__func__);
     switch( location )
     {
         case PSA_KEY_LOCATION_LOCAL_STORAGE:
@@ -439,7 +595,7 @@ psa_status_t psa_driver_wrapper_get_key_buffer_size_from_key_data(
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
     psa_key_type_t key_type = attributes->core.type;
-
+//printf("\n============= %s\n",__func__);
     *key_buffer_size = 0;
     switch( location )
     {
@@ -452,6 +608,7 @@ psa_status_t psa_driver_wrapper_get_key_buffer_size_from_key_data(
 #endif /* PSA_CRYPTO_DRIVER_TEST */
 
         default:
+        
             (void)key_type;
             (void)data;
             (void)data_length;
@@ -481,7 +638,7 @@ psa_status_t psa_driver_wrapper_get_key_buffer_size(
     psa_key_location_t location = PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
     psa_key_type_t key_type = attributes->core.type;
     size_t key_bits = attributes->core.bits;
-
+//printf("\n============= %s\n",__func__);
     *key_buffer_size = 0;
     switch( location )
     {
@@ -517,7 +674,7 @@ psa_status_t psa_driver_wrapper_generate_key(
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION(attributes->core.lifetime);
-
+//printf("\n============= %s\n",__func__);
     /* Try dynamically-registered SE interface first */
 #if defined(MBEDTLS_PSA_CRYPTO_SE_C)
     const psa_drv_se_t *drv;
@@ -592,9 +749,13 @@ psa_status_t psa_driver_wrapper_import_key(
     size_t *bits )
 {
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
+    psa_key_id_t key_id=0;   
+        
     psa_key_location_t location = PSA_KEY_LIFETIME_GET_LOCATION(
                                       psa_get_key_lifetime( attributes ) );
-
+    
+//printf("\n============= %s\n",__func__);
+    
     /* Try dynamically-registered SE interface first */
 #if defined(MBEDTLS_PSA_CRYPTO_SE_C)
     const psa_drv_se_t *drv;
@@ -642,10 +803,45 @@ psa_status_t psa_driver_wrapper_import_key(
 #endif /* PSA_CRYPTO_DRIVER_TEST */
 #endif /* PSA_CRYPTO_ACCELERATOR_DRIVER_PRESENT */
             /* Fell through, meaning no accelerator supports this operation */
-            return( psa_import_key_into_slot( attributes,
-                                              data, data_length,
-                                              key_buffer, key_buffer_size,
-                                              key_buffer_length, bits ) );
+#ifdef PSA_TS_DRIVER
+
+        status = ts_opaque_import_key(
+                                     attributes,
+                                     data, data_length,
+                                     &key_id, 4,
+                                     key_buffer_length, bits );
+                            
+        size_t export_key_length;
+        uint8_t *export_key=(uint8_t *) mbedtls_calloc(1,data_length);
+
+        status = ts_opaque_export_key(key_id,
+                                    *key_buffer_length,
+                                    export_key,
+                                    *key_buffer_length,
+                                    &export_key_length );
+
+
+        memcpy(key_buffer,export_key,export_key_length);
+
+        
+        *key_buffer_length=export_key_length;    
+        key_buffer_size = export_key_length;
+        free(export_key);
+
+#else
+        status= psa_import_key_into_slot( attributes,
+                                  data, data_length,
+                                  key_buffer, key_buffer_size,
+                                  key_buffer_length, bits );
+                      
+#endif            
+        (void) key_buffer_size;
+        (void) key_id;
+        (void) key_buffer;    
+
+        
+        return status;
+
         /* Add cases for opaque driver here */
 #if defined(PSA_CRYPTO_ACCELERATOR_DRIVER_PRESENT)
 #if defined(PSA_CRYPTO_DRIVER_TEST)
@@ -673,7 +869,7 @@ psa_status_t psa_driver_wrapper_export_key(
     psa_status_t status = PSA_ERROR_INVALID_ARGUMENT;
     psa_key_location_t location = PSA_KEY_LIFETIME_GET_LOCATION(
                                       psa_get_key_lifetime( attributes ) );
-
+//printf("\n============= %s\n",__func__);
     /* Try dynamically-registered SE interface first */
 #if defined(MBEDTLS_PSA_CRYPTO_SE_C)
     const psa_drv_se_t *drv;
@@ -731,7 +927,7 @@ psa_status_t psa_driver_wrapper_export_public_key(
     psa_status_t status = PSA_ERROR_INVALID_ARGUMENT;
     psa_key_location_t location = PSA_KEY_LIFETIME_GET_LOCATION(
                                       psa_get_key_lifetime( attributes ) );
-
+//printf("\n============= %s\n",__func__);
     /* Try dynamically-registered SE interface first */
 #if defined(MBEDTLS_PSA_CRYPTO_SE_C)
     const psa_drv_se_t *drv;
@@ -830,7 +1026,7 @@ psa_status_t psa_driver_wrapper_copy_key(
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
-
+//printf("\n============= %s\n",__func__);
 #if defined(MBEDTLS_PSA_CRYPTO_SE_C)
     const psa_drv_se_t *drv;
     psa_drv_se_context_t *drv_context;
@@ -884,7 +1080,7 @@ psa_status_t psa_driver_wrapper_cipher_encrypt(
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
-
+//printf("\n============= %s\n",__func__);
     switch( location )
     {
         case PSA_KEY_LOCATION_LOCAL_STORAGE:
@@ -974,7 +1170,7 @@ psa_status_t psa_driver_wrapper_cipher_decrypt(
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
-
+//printf("\n============= %s\n",__func__);
     switch( location )
     {
         case PSA_KEY_LOCATION_LOCAL_STORAGE:
@@ -1051,7 +1247,7 @@ psa_status_t psa_driver_wrapper_cipher_encrypt_setup(
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
-
+//printf("\n============= %s\n",__func__);
     switch( location )
     {
         case PSA_KEY_LOCATION_LOCAL_STORAGE:
@@ -1124,7 +1320,7 @@ psa_status_t psa_driver_wrapper_cipher_decrypt_setup(
     psa_status_t status = PSA_ERROR_INVALID_ARGUMENT;
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
-
+//printf("\n============= %s\n",__func__);
     switch( location )
     {
         case PSA_KEY_LOCATION_LOCAL_STORAGE:
@@ -1192,6 +1388,7 @@ psa_status_t psa_driver_wrapper_cipher_set_iv(
     const uint8_t *iv,
     size_t iv_length )
 {
+  //  printf("\n============= %s\n",__func__);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_CIPHER)
@@ -1230,6 +1427,7 @@ psa_status_t psa_driver_wrapper_cipher_update(
     size_t output_size,
     size_t *output_length )
 {
+ //   printf("\n============= %s\n",__func__);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_CIPHER)
@@ -1274,6 +1472,7 @@ psa_status_t psa_driver_wrapper_cipher_finish(
     size_t output_size,
     size_t *output_length )
 {
+  //  printf("\n============= %s\n",__func__);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_CIPHER)
@@ -1310,7 +1509,7 @@ psa_status_t psa_driver_wrapper_cipher_abort(
     psa_cipher_operation_t *operation )
 {
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
-
+//printf("\n============= %s\n",__func__);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_CIPHER)
@@ -1355,7 +1554,7 @@ psa_status_t psa_driver_wrapper_hash_compute(
     size_t *hash_length)
 {
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
-
+    printf("\n============= %s\n",__func__);
     /* Try accelerators first */
 #if defined(PSA_CRYPTO_DRIVER_TEST)
     status = mbedtls_test_transparent_hash_compute(
@@ -1387,6 +1586,7 @@ psa_status_t psa_driver_wrapper_hash_setup(
     psa_algorithm_t alg )
 {
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
+    printf("\n============= %s %p\n",__func__,operation);
 
     /* Try setup on accelerators first */
 #if defined(PSA_CRYPTO_DRIVER_TEST)
@@ -1401,14 +1601,23 @@ psa_status_t psa_driver_wrapper_hash_setup(
 
     /* If software fallback is compiled in, try fallback */
 #if defined(MBEDTLS_PSA_BUILTIN_HASH)
-    status = mbedtls_psa_hash_setup( &operation->ctx.mbedtls_ctx, alg );
-    if( status == PSA_SUCCESS )
-        operation->id = PSA_CRYPTO_MBED_TLS_DRIVER_ID;
+    #ifdef PSA_TS_DRIVER
+        status = crypto_caller_hash_setup_ext(&m_client, &operation->op_handle, alg);
+    #else    
+        status = mbedtls_psa_hash_setup( &operation->ctx.mbedtls_ctx, alg );
+    #endif    
+
+    if( status == PSA_SUCCESS ){
+        operation->id = PSA_CRYPTO_MBED_TLS_DRIVER_ID ;
+      //  printf("\n 2 ============= %s -- %d\n",__func__,(int)op_handle);
+    }
+    //printf("\n 2 ============= operation->id %s -- %d\n",__func__,(int)operation->id);    
 
     if( status != PSA_ERROR_NOT_SUPPORTED )
         return( status );
 #endif
     /* Nothing left to try if we fall through here */
+    
     (void) status;
     (void) operation;
     (void) alg;
@@ -1419,13 +1628,21 @@ psa_status_t psa_driver_wrapper_hash_clone(
     const psa_hash_operation_t *source_operation,
     psa_hash_operation_t *target_operation )
 {
+    psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
+     printf("\n============= %s %p\n",__func__,source_operation);
     switch( source_operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_HASH)
         case PSA_CRYPTO_MBED_TLS_DRIVER_ID:
             target_operation->id = PSA_CRYPTO_MBED_TLS_DRIVER_ID;
+
+            #ifdef PSA_TS_DRIVER
+            status = crypto_caller_hash_clone_ext(&m_client, source_operation->op_handle, &target_operation->op_handle);
+            return status;
+            #else
             return( mbedtls_psa_hash_clone( &source_operation->ctx.mbedtls_ctx,
                                             &target_operation->ctx.mbedtls_ctx ) );
+            #endif
 #endif
 #if defined(PSA_CRYPTO_DRIVER_TEST)
         case PSA_CRYPTO_TRANSPARENT_TEST_DRIVER_ID:
@@ -1445,12 +1662,20 @@ psa_status_t psa_driver_wrapper_hash_update(
     const uint8_t *input,
     size_t input_length )
 {
+
+    printf("\n============= %s %p\n",__func__,operation);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_HASH)
         case PSA_CRYPTO_MBED_TLS_DRIVER_ID:
-            return( mbedtls_psa_hash_update( &operation->ctx.mbedtls_ctx,
+            #ifdef PSA_TS_DRIVER
+                return crypto_caller_hash_update_ext(&m_client, operation->op_handle, input , input_length);
+              
+            #else
+                return( mbedtls_psa_hash_update( &operation->ctx.mbedtls_ctx,
                                              input, input_length ) );
+            #endif                                 
+           
 #endif
 #if defined(PSA_CRYPTO_DRIVER_TEST)
         case PSA_CRYPTO_TRANSPARENT_TEST_DRIVER_ID:
@@ -1471,12 +1696,17 @@ psa_status_t psa_driver_wrapper_hash_finish(
     size_t hash_size,
     size_t *hash_length )
 {
-    switch( operation->id )
+    printf("\n============= %s %p\n",__func__,operation);
+     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_HASH)
         case PSA_CRYPTO_MBED_TLS_DRIVER_ID:
+            #ifdef PSA_TS_DRIVER
+            return crypto_caller_hash_finish_ext(&m_client, operation->op_handle,hash, hash_size, hash_length);
+            #else
             return( mbedtls_psa_hash_finish( &operation->ctx.mbedtls_ctx,
                                              hash, hash_size, hash_length ) );
+            #endif                                 
 #endif
 #if defined(PSA_CRYPTO_DRIVER_TEST)
         case PSA_CRYPTO_TRANSPARENT_TEST_DRIVER_ID:
@@ -1495,11 +1725,18 @@ psa_status_t psa_driver_wrapper_hash_finish(
 psa_status_t psa_driver_wrapper_hash_abort(
     psa_hash_operation_t *operation )
 {
+    psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
+ printf("\n============= %s %p\n",__func__,operation);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_HASH)
         case PSA_CRYPTO_MBED_TLS_DRIVER_ID:
+            #ifdef PSA_TS_DRIVER 
+            status = crypto_caller_hash_abort_ext(&m_client,operation->op_handle);
+            return status;
+            #else
             return( mbedtls_psa_hash_abort( &operation->ctx.mbedtls_ctx ) );
+            #endif
 #endif
 #if defined(PSA_CRYPTO_DRIVER_TEST)
         case PSA_CRYPTO_TRANSPARENT_TEST_DRIVER_ID:
@@ -1507,6 +1744,7 @@ psa_status_t psa_driver_wrapper_hash_abort(
                         &operation->ctx.test_driver_ctx ) );
 #endif
         default:
+            (void) status;
             return( PSA_ERROR_BAD_STATE );
     }
 }
@@ -1523,7 +1761,7 @@ psa_status_t psa_driver_wrapper_aead_encrypt(
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
-
+    //printf("\n============= %s\n",__func__);
     switch( location )
     {
         case PSA_KEY_LOCATION_LOCAL_STORAGE:
@@ -1540,10 +1778,13 @@ psa_status_t psa_driver_wrapper_aead_encrypt(
                          plaintext, plaintext_length,
                          ciphertext, ciphertext_size, ciphertext_length );
             /* Declared with fallback == true */
-            if( status != PSA_ERROR_NOT_SUPPORTED )
+            if( status != PSA_ERROR_NOT_SUPPORTED ){
+               // printf("\n1 psa_driver_wrapper_aead_encrypt\n");
                 return( status );
+            }
 #endif /* PSA_CRYPTO_DRIVER_TEST */
 #endif /* PSA_CRYPTO_ACCELERATOR_DRIVER_PRESENT */
+               // printf("\n3 psa_driver_wrapper_aead_encrypt\n");
 
             /* Fell through, meaning no accelerator supports this operation */
             return( mbedtls_psa_aead_encrypt(
@@ -1558,6 +1799,8 @@ psa_status_t psa_driver_wrapper_aead_encrypt(
 
         default:
             /* Key is declared with a lifetime not known to us */
+                        //printf("\n2 psa_driver_wrapper_aead_encrypt\n");
+
             (void)status;
             return( PSA_ERROR_INVALID_ARGUMENT );
     }
@@ -1575,7 +1818,7 @@ psa_status_t psa_driver_wrapper_aead_decrypt(
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
-
+//printf("\n============= %s\n",__func__);
     switch( location )
     {
         case PSA_KEY_LOCATION_LOCAL_STORAGE:
@@ -1624,7 +1867,7 @@ psa_status_t psa_driver_wrapper_aead_encrypt_setup(
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
-
+//printf("\n============= %s\n",__func__);
     switch( location )
     {
         case PSA_KEY_LOCATION_LOCAL_STORAGE:
@@ -1672,7 +1915,7 @@ psa_status_t psa_driver_wrapper_aead_decrypt_setup(
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
-
+//printf("\n============= %s\n",__func__);
     switch( location )
     {
         case PSA_KEY_LOCATION_LOCAL_STORAGE:
@@ -1718,6 +1961,7 @@ psa_status_t psa_driver_wrapper_aead_set_nonce(
    const uint8_t *nonce,
    size_t nonce_length )
 {
+   // printf("\n============= %s\n",__func__);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_AEAD)
@@ -1752,6 +1996,7 @@ psa_status_t psa_driver_wrapper_aead_set_lengths(
    size_t ad_length,
    size_t plaintext_length )
 {
+  //  printf("\n============= %s\n",__func__);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_AEAD)
@@ -1786,6 +2031,7 @@ psa_status_t psa_driver_wrapper_aead_update_ad(
    const uint8_t *input,
    size_t input_length )
 {
+  //  printf("\n============= %s\n",__func__);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_AEAD)
@@ -1823,6 +2069,7 @@ psa_status_t psa_driver_wrapper_aead_update(
    size_t output_size,
    size_t *output_length )
 {
+    printf("\n============= %s\n",__func__);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_AEAD)
@@ -1866,6 +2113,7 @@ psa_status_t psa_driver_wrapper_aead_finish(
    size_t tag_size,
    size_t *tag_length )
 {
+   // printf("\n============= %s\n",__func__);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_AEAD)
@@ -1910,6 +2158,7 @@ psa_status_t psa_driver_wrapper_aead_verify(
    const uint8_t *tag,
    size_t tag_length )
 {
+   // printf("\n============= %s\n",__func__);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_AEAD)
@@ -1968,6 +2217,7 @@ psa_status_t psa_driver_wrapper_aead_verify(
 psa_status_t psa_driver_wrapper_aead_abort(
    psa_aead_operation_t *operation )
 {
+   // printf("\n============= %s\n",__func__);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_AEAD)
@@ -2008,7 +2258,7 @@ psa_status_t psa_driver_wrapper_mac_compute(
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
-
+//printf("\n============= %s\n",__func__);
     switch( location )
     {
         case PSA_KEY_LOCATION_LOCAL_STORAGE:
@@ -2072,7 +2322,7 @@ psa_status_t psa_driver_wrapper_mac_sign_setup(
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
-
+//printf("\n============= %s\n",__func__);
     switch( location )
     {
         case PSA_KEY_LOCATION_LOCAL_STORAGE:
@@ -2144,7 +2394,7 @@ psa_status_t psa_driver_wrapper_mac_verify_setup(
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
     psa_key_location_t location =
         PSA_KEY_LIFETIME_GET_LOCATION( attributes->core.lifetime );
-
+//printf("\n============= %s\n",__func__);
     switch( location )
     {
         case PSA_KEY_LOCATION_LOCAL_STORAGE:
@@ -2211,6 +2461,7 @@ psa_status_t psa_driver_wrapper_mac_update(
     const uint8_t *input,
     size_t input_length )
 {
+   // printf("\n============= %s\n",__func__);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_MAC)
@@ -2245,6 +2496,7 @@ psa_status_t psa_driver_wrapper_mac_sign_finish(
     size_t mac_size,
     size_t *mac_length )
 {
+  //  printf("\n============= %s\n",__func__);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_MAC)
@@ -2310,6 +2562,7 @@ psa_status_t psa_driver_wrapper_mac_verify_finish(
 psa_status_t psa_driver_wrapper_mac_abort(
     psa_mac_operation_t *operation )
 {
+   // printf("\n============= %s\n",__func__);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_MAC)
