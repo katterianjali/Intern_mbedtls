@@ -76,8 +76,12 @@
 #include "psa_crypto_se.h"
 #endif
 psa_status_t ts_init( void );
+size_t generate_token(uint8_t *challenge , uint8_t **token_buf);
+
 
 struct service_client m_client;
+struct service_client m_attest_client;
+
 
 psa_status_t ts_opaque_import_key(
     const psa_key_attributes_t *attributes,
@@ -94,7 +98,6 @@ psa_status_t ts_opaque_export_key(
         uint8_t *data,
         size_t data_size,
         size_t *data_length);
-
 
 
 extern psa_status_t crypto_caller_import_key_ext(struct service_client *context,
@@ -128,13 +131,23 @@ extern psa_status_t crypto_caller_hash_verify_ext(struct service_client *context
     uint32_t op_handle,
     const uint8_t *hash,
     size_t hash_length);
+
 extern psa_status_t crypto_caller_hash_clone_ext(struct service_client *context,
     uint32_t source_op_handle,
     uint32_t *target_op_handle);
 
+extern psa_status_t psa_initial_attest_get_token_ext(struct service_client *context,
+    const uint8_t *auth_challenge, size_t challenge_size,
+    uint8_t *token_buf, size_t token_buf_size, size_t *token_size);
+
+extern psa_status_t psa_initial_attest_get_token_size_ext(struct service_client *context,
+    size_t challenge_size, size_t *token_size);
+
 psa_status_t ts_init( void )
 {
     struct service_context *crypto_service_context = NULL;
+    struct service_context *attest_service_context = NULL;
+
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
 
     service_locator_init();
@@ -152,10 +165,57 @@ psa_status_t ts_init( void )
             }
         }
     }
-    return( PSA_SUCCESS );
 
+
+    attest_service_context = service_locator_query("sn:trustedfirmware.org:attestation:0", &status);
+    if (attest_service_context) {
+        struct rpc_caller *caller;
+        rpc_session_handle session_handle;
+
+
+        session_handle = service_context_open(attest_service_context, 0, &caller);                                                                                                                                               
+        if (session_handle) {
+
+            service_client_init(&m_attest_client, caller);
+            if (caller) {
+                discovery_client_get_service_info(&m_attest_client);
+            }
+        }
+    }
+
+    //status = generate_token(char *challenge , char **token_buf);
+
+    return PSA_SUCCESS;
 }
 
+#define PSA_INITIAL_ATTEST_CHALLENGE_SIZE_32  (32u)
+
+size_t generate_token(uint8_t  *challenge , uint8_t **token_buf)
+{
+    uint8_t token_buf2[4096];
+    psa_status_t status;
+    size_t challenge_len;
+    size_t token_size = 0;
+
+    challenge_len = PSA_INITIAL_ATTEST_CHALLENGE_SIZE_32;
+    status = psa_initial_attest_get_token_size_ext(&m_attest_client,
+        challenge_len,
+        &token_size);
+    status = psa_initial_attest_get_token_ext(&m_attest_client,
+        challenge, challenge_len,
+        token_buf2, sizeof(token_buf2),
+        &token_size);
+
+    if (status != PSA_SUCCESS){
+        printf("\ngenerate_token failed\n");
+        return -1;
+    }
+
+    for(long unsigned int i=0;i<token_size;i++)
+        *((*token_buf) +i) = token_buf2[i];
+
+    return token_size;    
+}
 
 psa_status_t ts_opaque_import_key(
     const psa_key_attributes_t *attributes,
@@ -1586,7 +1646,7 @@ psa_status_t psa_driver_wrapper_hash_setup(
     psa_algorithm_t alg )
 {
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
-    printf("\n============= %s %p\n",__func__,operation);
+    //printf("\n============= %s %p\n",__func__,operation);
 
     /* Try setup on accelerators first */
 #if defined(PSA_CRYPTO_DRIVER_TEST)
@@ -1629,7 +1689,7 @@ psa_status_t psa_driver_wrapper_hash_clone(
     psa_hash_operation_t *target_operation )
 {
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
-     printf("\n============= %s %p\n",__func__,source_operation);
+    // printf("\n============= %s %p\n",__func__,source_operation);
     switch( source_operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_HASH)
@@ -1663,7 +1723,7 @@ psa_status_t psa_driver_wrapper_hash_update(
     size_t input_length )
 {
 
-    printf("\n============= %s %p\n",__func__,operation);
+    //printf("\n============= %s %p\n",__func__,operation);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_HASH)
@@ -1696,7 +1756,7 @@ psa_status_t psa_driver_wrapper_hash_finish(
     size_t hash_size,
     size_t *hash_length )
 {
-    printf("\n============= %s %p\n",__func__,operation);
+  //  printf("\n============= %s %p\n",__func__,operation);
      switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_HASH)
@@ -1726,7 +1786,7 @@ psa_status_t psa_driver_wrapper_hash_abort(
     psa_hash_operation_t *operation )
 {
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
- printf("\n============= %s %p\n",__func__,operation);
+ //printf("\n============= %s %p\n",__func__,operation);
     switch( operation->id )
     {
 #if defined(MBEDTLS_PSA_BUILTIN_HASH)

@@ -1501,7 +1501,7 @@ struct mbedtls_ssl_context
     mbedtls_ssl_transform *MBEDTLS_PRIVATE(transform_in);        /*!<  current transform params (in)
                                                                   *    This is always a reference,
                                                                   *    never an owning pointer.        */
-    mbedtls_ssl_transform *MBEDTLS_PRIVATE(transform_out);       /*!<  current transform params (out)
+    mbedtls_ssl_transform *transform_out;       /*!<  current transform params (out)
                                                                   *    This is always a reference,
                                                                   *    never an owning pointer.        */
     mbedtls_ssl_transform *MBEDTLS_PRIVATE(transform);           /*!<  negotiated transform params
